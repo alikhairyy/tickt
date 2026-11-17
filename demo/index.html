@@ -2498,6 +2498,7 @@ const MALL = 'Demo Mall';
 const PAGE_URL = 'https://alikhairyy.github.io/tickt/demo/';
 const PHONE_MODE = /^#(g-|phone)/.test(location.hash);
 if (PHONE_MODE) document.body.classList.add('pm');
+window.addEventListener('hashchange', () => { if (location.hash.startsWith('#g-')) location.reload(); });
 
 let offset = 0;                       // minutes skipped ahead (shared in live mode)
 const now = () => new Date(Date.now() + offset * 60000);
