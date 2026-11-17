@@ -2527,14 +2527,14 @@ let live = false;
 let tickets = [];
 const tokens = new Map(Object.entries(store.get('parq-tokens', {})));
 const saveTokens = () => store.set('parq-tokens', Object.fromEntries(tokens));
-let gateSecret = b64u(rand(16));
+let gateSecret = b64u(rand(16)), secretReady = false;
 
 async function addTicket(t) { tickets.push(t); render(); await api('demo_tickets', { method: 'POST', body: JSON.stringify({ id: t.id, data: t }) }); }
 async function patchTicket(id, p) {
   const t = tickets.find((x) => x.id === id); Object.assign(t, p); render();
   await api('demo_tickets?id=eq.' + encodeURIComponent(id), { method: 'PATCH', body: JSON.stringify({ data: t }) });
 }
-async function setOffset(m) { offset = m; render(); await api('demo_config?key=eq.clock', { method: 'PATCH', body: JSON.stringify({ value: { offset: m } }) }); }
+async function setOffset(m) { offset = m; render(); await api('demo_config?key=eq.clock', { method: 'PATCH', body: JSON.stringify({ value: { offset: m, codes: published } }) }); }
 async function resetAll() {
   await api('demo_tickets?id=neq.__none__', { method: 'DELETE' });
   await setOffset(0);
@@ -2556,6 +2556,7 @@ async function poll() {
   try {
     const [rows, clock] = await Promise.all([api('demo_tickets?select=data&order=created_at.asc&limit=500'), api('demo_config?key=eq.clock&select=value')]);
     const o = clock && clock[0] ? +clock[0].value.offset || 0 : 0;
+    if (clock && clock[0] && Array.isArray(clock[0].value.codes)) published = clock[0].value.codes;
     if (o !== offset) { offset = o; render(); }
     onTickets(rows.map((r) => r.data));
     if (!live) { live = true; $('mode').textContent = '● Live: phones and this screen share one database'; }
@@ -2569,6 +2570,7 @@ async function poll() {
       await api('demo_config', { method: 'POST', headers: { Prefer: 'resolution=ignore-duplicates' }, body: JSON.stringify([{ key: 'gate', value: { secret: gateSecret } }, { key: 'clock', value: { offset: 0 } }]) });
       const g2 = await api('demo_config?key=eq.gate&select=value'); gateSecret = g2[0].value.secret;
     }
+    secretReady = true;
     await rotate(true);
     await poll();
     setInterval(poll, 2000);
@@ -2598,11 +2600,27 @@ let gate = { cur: '', w: -1 };
 async function rotate(force) {
   const w = windowNo(); if (!force && w === gate.w) return;
   gate = { cur: await codeFor(w), w };
+  if (!PHONE_MODE && secretReady) publishCodes(w);
   $('gateCode').textContent = gate.cur;
-  $('gateQr').innerHTML = qrSvg(`${PAGE_URL}#g-${gate.cur}`);
+  $('gateQr').innerHTML = secretReady ? qrSvg(`${PAGE_URL}#g-${gate.cur}`) : '<div style="padding:60px 0;color:#0E1A2B">Connecting…</div>';
+  if (!secretReady) $('gateCode').textContent = '------';
 }
 // Accept the code for 2 minutes after it was shown: phones can be slow to open a link, and the clocks of two devices differ a little.
-async function codeValid(c) { const w = windowNo(); for (let i = -1; i <= 4; i++) if (c === await codeFor(w - i)) return true; return false; }
+// The gate screen publishes the codes it is showing, so phones check against exactly what was on screen.
+let published = [];
+async function publishCodes(w) {
+  try {
+    const codes = [await codeFor(w), await codeFor(w - 1), await codeFor(w - 2), await codeFor(w - 3)];
+    published = codes;
+    await api('demo_config?key=eq.clock', { method: 'PATCH', body: JSON.stringify({ value: { offset, codes } }) });
+  } catch {}
+}
+async function fetchPublished() {
+  try { const r = await api('demo_config?key=eq.clock&select=value'); published = (r && r[0] && r[0].value.codes) || []; } catch {}
+  return published;
+}
+async function codeValid(c) {
+  if ((await fetchPublished()).includes(c)) return true; const w = windowNo(); for (let i = -1; i <= 4; i++) if (c === await codeFor(w - i)) return true; return false; }
 
 async function startSession(code) {
   if (!(await codeValid(code))) throw new Error('expired');
@@ -2630,7 +2648,7 @@ function qrSvg(text) {
 
 // ---------- UI state ----------
 let phone = PHONE_MODE
-  ? (location.hash.startsWith('#g-') ? { view: 'landing', ticketId: null, gateCode: location.hash.slice(3).toUpperCase() } : { view: 'ticket', ticketId: store.get('parq-phone-ticket', null) })
+  ? (location.hash.startsWith('#g-') ? { view: 'landing', ticketId: null, gateCode: decodeURIComponent(location.hash.slice(3)).toUpperCase().replace(/[^0-9A-Z]/g, '').slice(0, 6) } : { view: 'ticket', ticketId: store.get('parq-phone-ticket', null) })
   : { view: 'camera', ticketId: null };
 let kiosk = { view: 'scan', ticketId: null, fee: 0, msg: '' };
 const toast = (m) => { const e = $('toast'); e.textContent = m; e.classList.add('show'); clearTimeout(toast.t); toast.t = setTimeout(() => e.classList.remove('show'), 3000); };
@@ -2645,7 +2663,7 @@ function renderPhone() {
     el.innerHTML = box(`<div class="sg" style="font-size:22px;font-weight:700">Can't reach the ticket system</div><p style="margin:0;color:#5A6778">Check your internet connection, then scan the gate QR again.</p>`);
   } else if (phone.view === 'failed') {
     el.innerHTML = box(phone.why === 'expired'
-      ? `<div class="sg" style="font-size:22px;font-weight:700">This gate code has expired</div><p style="margin:0;color:#5A6778">The code on the gate screen changes every 30 seconds. Scan the screen again and tap "Get my ticket" straight away.</p>`
+      ? `<div class="sg" style="font-size:22px;font-weight:700">This gate code has expired</div><p style="margin:0;color:#5A6778">The code on the gate screen changes every 30 seconds. Scan the screen again and tap "Get my ticket" straight away.</p><p style="margin:0;font-size:12px;color:#8A96A6">Scanned ${phone.scanned || '?'} · gate showing ${published[0] || '?'} · ${new Date().toLocaleTimeString('en-GB')}</p>`
       : `<div class="sg" style="font-size:22px;font-weight:700">Couldn't create your ticket</div><p style="margin:0;color:#5A6778">Check your internet connection, then scan the gate screen again.</p>`);
   } else if (phone.view === 'camera') {
     el.innerHTML = box(`<div class="sg" style="font-size:22px;font-weight:700">Camera</div><p style="margin:0;color:#5A6778">Point the camera at the QR code on the entrance screen.</p>`);
@@ -2737,7 +2755,7 @@ async function getTicket() {
     else if (!live) { pulse('barIn'); toast(`Ticket ${t.code} created. The entrance barrier opens.`); }
   } catch (e) {
     const expired = e && e.message === 'expired';
-    phone = PHONE_MODE ? { view: 'failed', ticketId: null, why: expired ? 'expired' : 'network' } : { view: 'camera', ticketId: null };
+    phone = PHONE_MODE ? { view: 'failed', ticketId: null, why: expired ? 'expired' : 'network', scanned: phone.gateCode } : { view: 'camera', ticketId: null };
     toast(expired ? 'That entrance code has expired. Scan the gate screen again.' : 'Could not create the ticket. Try again.');
   }
   render();
