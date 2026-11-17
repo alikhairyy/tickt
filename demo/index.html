@@ -101,6 +101,7 @@ body.pm .top p,body.pm #secIn,body.pm #secOut,body.pm #secRep,body.pm #btnNewDri
 body.pm .phone{background:none;padding:0;box-shadow:none;max-width:480px}body.pm .scr{min-height:0;border-radius:20px}body.pm #secPh>h2,body.pm #secPh>.sub{display:none}
 body.pm .lane{grid-template-columns:minmax(0,1fr)}body.pm #secPh{border:0;background:transparent;padding:0}
 #mode{font-size:13px;color:#B7C2D0}
+.ff[hidden]{display:none}
 .toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%) translateY(120px);background:var(--navy);color:#fff;padding:12px 20px;border-radius:12px;font-weight:600;transition:transform .3s;z-index:9;max-width:90vw}
 .toast.show{transform:translateX(-50%)}
 @media(prefers-reduced-motion:reduce){.bar .arm,.toast,.timer i{transition:none}}
@@ -2600,7 +2601,8 @@ async function rotate(force) {
   $('gateCode').textContent = gate.cur;
   $('gateQr').innerHTML = qrSvg(`${PAGE_URL}#g-${gate.cur}`);
 }
-async function codeValid(c) { const w = windowNo(); return c === await codeFor(w) || c === await codeFor(w - 1); }
+// Accept the code for 2 minutes after it was shown: phones can be slow to open a link, and the clocks of two devices differ a little.
+async function codeValid(c) { const w = windowNo(); for (let i = -1; i <= 4; i++) if (c === await codeFor(w - i)) return true; return false; }
 
 async function startSession(code) {
   if (!(await codeValid(code))) throw new Error('expired');
@@ -2641,6 +2643,10 @@ function renderPhone() {
   const box = (inner) => `${hd}<div class="grow center" style="display:flex;flex-direction:column;justify-content:center;gap:12px">${inner}</div>`;
   if (phone.view === 'error') {
     el.innerHTML = box(`<div class="sg" style="font-size:22px;font-weight:700">Can't reach the ticket system</div><p style="margin:0;color:#5A6778">Check your internet connection, then scan the gate QR again.</p>`);
+  } else if (phone.view === 'failed') {
+    el.innerHTML = box(phone.why === 'expired'
+      ? `<div class="sg" style="font-size:22px;font-weight:700">This gate code has expired</div><p style="margin:0;color:#5A6778">The code on the gate screen changes every 30 seconds. Scan the screen again and tap "Get my ticket" straight away.</p>`
+      : `<div class="sg" style="font-size:22px;font-weight:700">Couldn't create your ticket</div><p style="margin:0;color:#5A6778">Check your internet connection, then scan the gate screen again.</p>`);
   } else if (phone.view === 'camera') {
     el.innerHTML = box(`<div class="sg" style="font-size:22px;font-weight:700">Camera</div><p style="margin:0;color:#5A6778">Point the camera at the QR code on the entrance screen.</p>`);
   } else if (phone.view === 'landing') {
@@ -2730,8 +2736,9 @@ async function getTicket() {
     if (PHONE_MODE) { store.set('parq-phone-ticket', t.id); history.replaceState(null, '', '#phone'); toast(`Ticket ${t.code} created. The gate opens.`); }
     else if (!live) { pulse('barIn'); toast(`Ticket ${t.code} created. The entrance barrier opens.`); }
   } catch (e) {
-    phone = PHONE_MODE ? { view: 'ticket', ticketId: null } : { view: 'camera', ticketId: null };
-    toast(e && e.message === 'expired' ? 'That entrance code has expired. Scan the gate screen again.' : 'Could not create the ticket. Try again.');
+    const expired = e && e.message === 'expired';
+    phone = PHONE_MODE ? { view: 'failed', ticketId: null, why: expired ? 'expired' : 'network' } : { view: 'camera', ticketId: null };
+    toast(expired ? 'That entrance code has expired. Scan the gate screen again.' : 'Could not create the ticket. Try again.');
   }
   render();
 }
@@ -2775,6 +2782,7 @@ function tick() {
 }
 let lastMin = -1;
 setInterval(() => { tick(); const m = now().getMinutes(); if (m !== lastMin) { lastMin = m; if (kiosk.view !== 'pay' && kiosk.view !== 'busy') render(); } }, 1000);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) { rotate(true); tick(); } });
 rotate(true); tick(); render();
 }
 </script>
